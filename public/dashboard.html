@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard - Disaster Material Mgmt</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body>
+  
+  <nav class="sidebar">
+    <div class="logo">DMM System</div>
+    <ul class="nav-links">
+      <li><a href="dashboard.html" class="active">Dashboard / Inventory</a></li>
+      <li><a href="receipt.html">Receive Material</a></li>
+      <li><a href="movement.html">Dispatch / Move</a></li>
+      <li><a href="delivery.html">Last Mile Delivery</a></li>
+      <li><a href="history.html">Transaction History</a></li>
+      <li class="admin-only"><a href="users.html">Manage Staff</a></li>
+      <li><a href="#" id="logoutBtn" style="color: var(--danger); margin-top: 2rem;">Logout</a></li>
+    </ul>
+  </nav>
+
+  <main class="main-content fade-in">
+    <header>
+      <h1 class="page-title-gradient">Inventory Overview</h1>
+      <div class="header-actions">
+        <div class="search-bar">
+          <span style="color: var(--text-muted)">🔍</span>
+          <input type="text" id="searchInput" placeholder="Search materials...">
+        </div>
+        <button class="theme-toggle" id="themeToggleBtn">Switch Theme</button>
+      </div>
+    </header>
+
+    <div class="live-strip is-waiting" id="liveStrip">
+      <span class="live-dot"></span>
+      <span id="liveStatusText">Connecting to live sync…</span>
+    </div>
+    <div class="activity-feed" id="activityFeed" aria-live="polite"></div>
+
+    <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 2rem; margin-bottom: 3rem;">
+      <div class="stats-grid" id="inventoryGrid" style="margin-bottom: 0;">
+        <!-- Generated via JS -->
+      </div>
+      <div class="stat-card" style="display: flex; align-items: center; justify-content: center; min-height: 250px;">
+        <canvas id="categoryChart"></canvas>
+      </div>
+    </div>
+
+    <!-- Live Map Overview -->
+    <div class="form-panel map-panel-glow" style="max-width: 100%; padding: 1.5rem; margin-bottom: 3rem;">
+      <h3 style="margin-bottom: 1rem;">Live Regional Map</h3>
+      <div id="dashboardMap" style="height: 350px; border-radius: 12px; border: 1px solid var(--border); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);"></div>
+    </div>
+
+    <!-- Forms to add new material type -->
+    <div class="form-panel">
+      <h3 style="margin-bottom: 1.5rem;">Register New Material Type</h3>
+      <form id="newMaterialForm">
+        <div class="input-group">
+          <label>Material Name</label>
+          <input type="text" id="mName" required>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+          <div class="input-group">
+            <label>Category</label>
+            <select id="mCat">
+              <option value="Food">Food</option>
+              <option value="Medical">Medical</option>
+              <option value="Water">Water</option>
+              <option value="Shelter">Shelter</option>
+              <option value="Equipment">Equipment</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="input-group">
+            <label>Unit (e.g. liters, boxes)</label>
+            <input type="text" id="mUnit" required>
+          </div>
+          <div class="input-group">
+            <label>Expiry Date (Optional)</label>
+            <input type="date" id="mExpiry">
+          </div>
+        </div>
+        <button type="submit" class="btn btn-glow">Add Material</button>
+      </form>
+    </div>
+
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/realtime.js"></script>
+  <script>
+    document.getElementById('logoutBtn').addEventListener('click', () => apiClient.logout());
+
+    const themeToggleBtn = document.getElementById('themeToggleBtn');
+    themeToggleBtn.addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'light' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+    });
+
+    let chartInstance = null;
+    let materialsReloadTimer;
+
+    function scheduleMaterialsReload() {
+      clearTimeout(materialsReloadTimer);
+      materialsReloadTimer = setTimeout(() => {
+        const kw = document.getElementById('searchInput')?.value || '';
+        loadMaterials(kw);
+      }, 450);
+    }
+
+    function pushActivity(text) {
+      const el = document.getElementById('activityFeed');
+      if (!el) return;
+      const chip = document.createElement('span');
+      chip.className = 'activity-chip';
+      chip.textContent = text;
+      el.prepend(chip);
+      while (el.children.length > 8) el.removeChild(el.lastChild);
+    }
+
+    document.addEventListener('realtime:ready', () => {
+      const t = document.getElementById('liveStatusText');
+      const strip = document.getElementById('liveStrip');
+      if (t) t.textContent = 'Live sync active — inventory updates in real time';
+      if (strip) strip.classList.remove('is-waiting');
+    });
+
+    if (window.Realtime) {
+      Realtime.on('transaction:new', (tx) => {
+        scheduleMaterialsReload();
+        const name = tx.material?.name || 'Material';
+        pushActivity(`${tx.type}: ${name} (${tx.quantity})`);
+      });
+      Realtime.on('material:created', () => {
+        scheduleMaterialsReload();
+        pushActivity('New material type registered');
+      });
+      Realtime.on('material:updated', () => scheduleMaterialsReload());
+      Realtime.on('material:deleted', () => {
+        scheduleMaterialsReload();
+        pushActivity('Material removed from catalog');
+      });
+    }
+
+    // Initialize Dashboard Map
+    const map = L.map('dashboardMap').setView([28.6139, 77.2090], 9);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; CARTO'
+    }).addTo(map);
+
+    // Add some random activity markers for dashboard
+    const camps = [
+      { name: "Central Hub", lat: 28.6139, lng: 77.2090, active: true },
+      { name: "Relief Camp 1", lat: 28.5355, lng: 77.3910, active: true },
+      { name: "Relief Camp 2", lat: 28.4595, lng: 77.0266, active: true },
+      { name: "Relief Camp 3", lat: 28.6692, lng: 77.4538, active: true },
+      { name: "Relief Camp 4", lat: 28.4089, lng: 77.3178, active: false }
+    ];
+
+    camps.forEach(camp => {
+      const color = camp.active ? '#10b981' : '#ef4444'; // Green or Red
+      const circle = L.circleMarker([camp.lat, camp.lng], {
+        color: color,
+        fillColor: color,
+        fillOpacity: 0.5,
+        radius: camp.active ? 8 : 4
+      }).addTo(map);
+      
+      circle.bindPopup(`<b>${camp.name}</b><br>Status: ${camp.active ? 'Active' : 'Inactive'}`);
+      
+      // Add pulsing effect for active camps
+      if(camp.active) {
+          setInterval(() => {
+              circle.setRadius(circle.getRadius() === 8 ? 10 : 8);
+          }, 1000);
+      }
+    });
+
+    async function processDeletion(id) {
+        if (!confirm("Are you sure you want to delete this material?")) return;
+        try {
+            await apiClient.delete(`/materials/${id}`);
+            if(typeof Toast !== 'undefined') Toast.show('Material deleted successfully', 'success');
+            loadMaterials();
+        } catch (err) {
+            if(typeof Toast !== 'undefined') Toast.show(err.message, 'error');
+            else alert(err.message);
+        }
+    }
+
+    async function loadMaterials(keyword = '') {
+      const grid = document.getElementById('inventoryGrid');
+      grid.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
+
+      try {
+        const query = keyword ? `?keyword=${keyword}` : '';
+        const data = await apiClient.get(`/materials${query}`);
+        const materials = data.materials || [];
+        
+        if (materials.length === 0) {
+          grid.innerHTML = '<p style="color: var(--text-muted)">No materials currently tracked matching your query.</p>';
+          updateChart([]);
+          return;
+        }
+
+        const now = new Date();
+
+        grid.innerHTML = materials.map((m, idx) => {
+          let expiryAlert = '';
+          if (m.expiryDate) {
+              const exp = new Date(m.expiryDate);
+              const daysLeft = Math.ceil((exp - now) / (1000 * 60 * 60 * 24));
+              if (daysLeft < 0) {
+                  expiryAlert = `<div class="expiry-warning" style="color: var(--danger)">⚠ EXPIRED (${Math.abs(daysLeft)} days ago)</div>`;
+              } else if (daysLeft <= 30) {
+                  expiryAlert = `<div class="expiry-warning">⚠ Expires in ${daysLeft} days</div>`;
+              } else {
+                  expiryAlert = `<div style="color: var(--secondary); font-size: 0.8rem; margin-top: 0.5rem;">Valid until ${exp.toLocaleDateString()}</div>`;
+              }
+          }
+
+          return `
+          <div class="stat-card stagger-in" style="animation-delay: ${Math.min(idx, 12) * 0.05}s">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                <h3>${m.name} (${m.category})</h3>
+                <button class="btn-icon danger" onclick="processDeletion('${m._id}')" title="Delete Material">🗑️</button>
+            </div>
+            <div class="value">${m.availableQuantity}</div>
+            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.5rem;">Unit: ${m.unit}</p>
+            ${expiryAlert}
+            <div class="barcode-container">
+               <svg class="barcode" jsbarcode-value="${m._id.substring(0,8).toUpperCase()}" jsbarcode-displayvalue="true" jsbarcode-margin="0" jsbarcode-height="25" jsbarcode-width="1.5"></svg>
+            </div>
+          </div>
+        `}).join('');
+
+        JsBarcode(".barcode").init();
+        updateChart(materials);
+
+      } catch (err) {
+        if(typeof Toast !== 'undefined') Toast.show(err.message, 'error');
+        grid.innerHTML = '';
+      }
+    }
+
+    function updateChart(materials) {
+        const ctx = document.getElementById('categoryChart').getContext('2d');
+        const categories = {};
+        
+        materials.forEach(m => {
+            categories[m.category] = (categories[m.category] || 0) + 1;
+        });
+
+        const data = {
+            labels: Object.keys(categories),
+            datasets: [{
+                data: Object.values(categories),
+                backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#64748b'],
+                borderWidth: 0
+            }]
+        };
+
+        if (chartInstance) {
+            chartInstance.destroy();
+        }
+
+        chartInstance = new Chart(ctx, {
+            type: 'doughnut',
+            data: data,
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { position: 'bottom', labels: { color: getComputedStyle(document.documentElement).getPropertyValue('--text-light') } },
+                    title: { display: true, text: 'Material Types Breakdown', color: getComputedStyle(document.documentElement).getPropertyValue('--text-muted') }
+                }
+            }
+        });
+    }
+
+    let searchTimeout;
+    document.getElementById('searchInput').addEventListener('input', (e) => {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+            loadMaterials(e.target.value);
+        }, 500);
+    });
+
+    document.getElementById('newMaterialForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await apiClient.post('/materials', {
+          name: document.getElementById('mName').value,
+          category: document.getElementById('mCat').value,
+          unit: document.getElementById('mUnit').value,
+          expiryDate: document.getElementById('mExpiry').value || undefined
+        });
+        e.target.reset();
+        if(typeof Toast !== 'undefined') Toast.show('Material added successfully!', 'success');
+        loadMaterials();
+      } catch (err) {
+        if(typeof Toast !== 'undefined') Toast.show(err.message, 'error');
+        else alert(err.message);
+      }
+    });
+
+    loadMaterials();
+  </script>
+</body>
+</html>

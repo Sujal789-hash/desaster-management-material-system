@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Receipt - Disaster Material Mgmt</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  
+  <nav class="sidebar">
+    <div class="logo">DMM System</div>
+    <ul class="nav-links">
+      <li><a href="dashboard.html">Dashboard / Inventory</a></li>
+      <li><a href="receipt.html" class="active">Receive Material</a></li>
+      <li><a href="movement.html">Dispatch / Move</a></li>
+      <li><a href="delivery.html">Last Mile Delivery</a></li>
+      <li><a href="history.html">Transaction History</a></li>
+      <li class="admin-only"><a href="users.html">Manage Staff</a></li>
+      <li><a href="#" id="logoutBtn" style="color: var(--danger); margin-top: 2rem;">Logout</a></li>
+    </ul>
+  </nav>
+
+  <main class="main-content fade-in">
+    <header>
+      <h1 class="page-title-gradient">Receive Material Hub</h1>
+      <div class="header-actions">
+        <button class="theme-toggle" id="themeToggleBtn">Switch Theme</button>
+      </div>
+    </header>
+
+    <div class="form-panel">
+      <h3>Log Incoming Inventory</h3>
+      <p style="color: var(--text-muted); margin-bottom: 2rem; font-size: 0.85rem;">Record new materials arriving from donors, warehouses, or NGOs.</p>
+      
+      <form id="receiptForm">
+        <div class="input-group">
+          <label>Material Type</label>
+          <select id="mSelect" required></select>
+        </div>
+        <div class="input-group">
+          <label>Quantity Received</label>
+          <input type="number" id="mQty" min="1" required>
+        </div>
+        <div class="input-group">
+          <label>Source (e.g., Red Cross, Warehouse A)</label>
+          <input type="text" id="mSource" required>
+        </div>
+        <div class="input-group">
+          <label>Hub Destination</label>
+          <input type="text" id="mDest" value="Central Hub" required>
+        </div>
+        <div class="input-group">
+          <label>Auditor Notes</label>
+          <input type="text" id="mNotes" placeholder="Optional audit notes">
+        </div>
+        <button type="submit" class="btn">Record Receipt</button>
+      </form>
+    </div>
+
+    <!-- Latest Transactions Table -->
+    <div class="table-panel">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Type</th>
+            <th>Material</th>
+            <th>Qty</th>
+            <th>Source -> Dest</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="txTable"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script>
+    document.getElementById('logoutBtn').addEventListener('click', () => apiClient.logout());
+    
+    document.getElementById('themeToggleBtn').addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'light' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+    });
+
+    async function init() {
+      // Load materials for select dropdown
+      const dataM = await apiClient.get('/materials?limit=1000');
+      const materials = dataM.materials || dataM;
+      
+      const select = document.getElementById('mSelect');
+      select.innerHTML = materials.map(m => `<option value="${m._id}">${m.name} (${m.unit})</option>`).join('');
+
+      // Load transactions
+      const dataT = await apiClient.get('/transactions?limit=25');
+      const txs = dataT.transactions || dataT;
+      
+      const tbody = document.getElementById('txTable');
+      tbody.innerHTML = txs.filter(t => t.type === 'RECEIPT').map(t => `
+        <tr>
+          <td>${new Date(t.createdAt).toLocaleDateString()}</td>
+          <td><span class="badge ${t.type.toLowerCase()}">${t.type}</span></td>
+          <td>${t.material?.name || 'Unknown'}</td>
+          <td>+${t.quantity}</td>
+          <td>${t.source} -> ${t.destination}</td>
+          <td>${t.status}</td>
+        </tr>
+      `).join('');
+    }
+
+    document.getElementById('receiptForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        await apiClient.post('/transactions/receipt', {
+          materialId: document.getElementById('mSelect').value,
+          quantity: parseInt(document.getElementById('mQty').value, 10),
+          source: document.getElementById('mSource').value,
+          destination: document.getElementById('mDest').value,
+          notes: document.getElementById('mNotes').value
+        });
+        e.target.reset();
+        init();
+        Toast.show('Receipt logged successfully. Inventory updated.', 'success');
+      } catch (err) {
+        Toast.show(err.message, 'error');
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>

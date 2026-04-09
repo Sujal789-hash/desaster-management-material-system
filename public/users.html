@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Staff Management - Disaster Material Mgmt</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  
+  <nav class="sidebar">
+    <div class="logo">DMM System</div>
+    <ul class="nav-links">
+      <li><a href="dashboard.html">Dashboard / Inventory</a></li>
+      <li><a href="receipt.html">Receive Material</a></li>
+      <li><a href="movement.html">Dispatch / Move</a></li>
+      <li><a href="delivery.html">Last Mile Delivery</a></li>
+      <li><a href="history.html">Transaction History</a></li>
+      <li class="admin-only"><a href="users.html" class="active">Manage Staff</a></li>
+      <li><a href="#" id="logoutBtn" style="color: var(--danger); margin-top: 2rem;">Logout</a></li>
+    </ul>
+  </nav>
+
+  <main class="main-content fade-in">
+    <header>
+      <h1 class="page-title-gradient">Staff & Role Management</h1>
+      <div class="header-actions">
+        <button class="theme-toggle" id="themeToggleBtn">Switch Theme</button>
+      </div>
+    </header>
+
+    <div class="table-panel">
+      <table>
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Joined</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="usersTable">
+           <tr><td colspan="5"><div class="skeleton"></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script>
+    document.getElementById('logoutBtn').addEventListener('click', () => apiClient.logout());
+
+    const themeToggleBtn = document.getElementById('themeToggleBtn');
+    themeToggleBtn.addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'light' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+    });
+
+    async function toggleActive(id, currentStatus) {
+        try {
+            await apiClient.put(`/auth/users/${id}`, { isActive: !currentStatus });
+            Toast.show(`User account ${!currentStatus ? 'activated' : 'disabled'}.`, 'success');
+            loadUsers();
+        } catch(err) {
+            Toast.show(err.message, 'error');
+        }
+    }
+
+    async function changeRole(id, currentRole) {
+        const newRole = currentRole === 'admin' ? 'manager' : 'admin';
+        if(!confirm(`Change role to ${newRole.toUpperCase()}?`)) return;
+        
+        try {
+            await apiClient.put(`/auth/users/${id}`, { role: newRole });
+            Toast.show(`Role updated to ${newRole}.`, 'success');
+            loadUsers();
+        } catch(err) {
+            Toast.show(err.message, 'error');
+        }
+    }
+
+    async function loadUsers() {
+      const tbody = document.getElementById('usersTable');
+      tbody.innerHTML = '<tr><td colspan="5"><div class="skeleton"></div></td></tr>';
+
+      try {
+        const users = await apiClient.get('/auth/users');
+        
+        const me = JSON.parse(localStorage.getItem('user'));
+
+        if (users.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted)">No users found.</td></tr>';
+        } else {
+          tbody.innerHTML = users.map(u => {
+             const statusStr = u.isActive ? '<span style="color: var(--secondary)">Active</span>' : '<span style="color: var(--danger)">Disabled</span>';
+             const isMe = u._id === me._id;
+             
+             return `
+            <tr>
+              <td><strong>${u.username}</strong> ${isMe ? '<span style="font-size:0.75rem;color:var(--text-muted);">(You)</span>' : ''}</td>
+              <td><span class="badge" style="background: rgba(139, 92, 246, 0.1); color: #8b5cf6; border: 1px solid rgba(139, 92, 246, 0.2);">${u.role}</span></td>
+              <td>${statusStr}</td>
+              <td style="color: var(--text-muted)">${new Date(u.createdAt).toLocaleDateString()}</td>
+              <td>
+                 <button class="btn-icon" onclick="changeRole('${u._id}', '${u.role}')" ${isMe ? 'disabled style="opacity:0.3"' : ''}>🔄 Swap Role</button>
+                 <button class="btn-icon danger" onclick="toggleActive('${u._id}', ${u.isActive})" ${isMe ? 'disabled style="opacity:0.3"' : ''}>⛔ Toggle Access</button>
+              </td>
+            </tr>
+          `}).join('');
+        }
+      } catch (err) {
+        Toast.show(err.message, 'error');
+        tbody.innerHTML = '<tr><td colspan="5">Failed to fetch staff. Admin access required.</td></tr>';
+      }
+    }
+
+    loadUsers();
+  </script>
+</body>
+</html>

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Transaction History - Disaster Material Mgmt</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  
+  <nav class="sidebar">
+    <div class="logo">DMM System</div>
+    <ul class="nav-links">
+      <li><a href="dashboard.html">Dashboard / Inventory</a></li>
+      <li><a href="receipt.html">Receive Material</a></li>
+      <li><a href="movement.html">Dispatch / Move</a></li>
+      <li><a href="delivery.html">Last Mile Delivery</a></li>
+      <li><a href="history.html" class="active">Transaction History</a></li>
+      <li class="admin-only"><a href="users.html">Manage Staff</a></li>
+      <li><a href="#" id="logoutBtn" style="color: var(--danger); margin-top: 2rem;">Logout</a></li>
+    </ul>
+  </nav>
+
+  <main class="main-content fade-in">
+    <header>
+      <h1 class="page-title-gradient">Transaction History</h1>
+      <div class="header-actions">
+        <button class="btn" id="exportBtn" style="padding: 0.5rem 1rem; width: auto; font-size: 0.85rem;">Export CSV</button>
+        <button class="theme-toggle" id="themeToggleBtn">Switch Theme</button>
+      </div>
+    </header>
+
+    <div class="live-strip is-waiting" id="liveStrip">
+      <span class="live-dot"></span>
+      <span id="liveStatusText">Connecting to live log stream…</span>
+    </div>
+
+    <div class="table-panel">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Type</th>
+            <th>Material</th>
+            <th>Quantity</th>
+            <th>Source -> Destination</th>
+            <th>Status</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody id="historyTable">
+          <tr><td colspan="7"><div class="skeleton"></div></td></tr>
+        </tbody>
+      </table>
+      <div id="pagination" style="padding: 1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border);">
+         <span id="pageInfo" style="color: var(--text-muted); font-size: 0.85rem;"></span>
+         <div>
+            <button class="btn-icon" id="prevBtn">⬅️ Prev</button>
+            <button class="btn-icon" id="nextBtn">Next ➡️</button>
+         </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/realtime.js"></script>
+  <script>
+    document.getElementById('logoutBtn').addEventListener('click', () => apiClient.logout());
+
+    const themeToggleBtn = document.getElementById('themeToggleBtn');
+    themeToggleBtn.addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'light' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+    });
+
+    let currentPage = 1;
+    let totalPages = 1;
+    let allDataForExport = [];
+
+    document.addEventListener('realtime:ready', () => {
+      const t = document.getElementById('liveStatusText');
+      const strip = document.getElementById('liveStrip');
+      if (t) t.textContent = 'New transactions appear automatically on page 1';
+      if (strip) strip.classList.remove('is-waiting');
+    });
+
+    if (window.Realtime) {
+      Realtime.on('transaction:new', () => {
+        if (currentPage === 1) loadHistory(1);
+      });
+    }
+
+    async function loadHistory(page = 1) {
+      const tbody = document.getElementById('historyTable');
+      tbody.innerHTML = '<tr><td colspan="7"><div class="skeleton"></div></td></tr>';
+
+      try {
+        const data = await apiClient.get(`/transactions?page=${page}&limit=15`);
+        const txs = data.transactions;
+        currentPage = data.page;
+        totalPages = data.pages;
+
+        if (txs.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted)">No transactions found.</td></tr>';
+        } else {
+          tbody.innerHTML = txs.map(t => {
+             const mName = t.material ? t.material.name : 'Unknown Material';
+             const mUnit = t.material ? t.material.unit : '';
+             const sign = t.type === 'RECEIPT' ? '+' : '-';
+             
+             return `
+            <tr>
+              <td>${new Date(t.createdAt).toLocaleString()}</td>
+              <td><span class="badge ${t.type.toLowerCase()}">${t.type}</span></td>
+              <td>${mName}</td>
+              <td>${sign}${t.quantity} <span style="font-size: 0.75rem; color: var(--text-muted)">${mUnit}</span></td>
+              <td>${t.source} &rarr; ${t.destination}</td>
+              <td>${t.status}</td>
+              <td style="color: var(--text-muted); font-size: 0.85rem;">${t.notes || '-'}</td>
+            </tr>
+          `}).join('');
+        }
+
+        document.getElementById('pageInfo').innerText = `Page ${currentPage} of ${totalPages} (Total logs: ${data.total})`;
+        document.getElementById('prevBtn').disabled = currentPage === 1;
+        document.getElementById('nextBtn').disabled = currentPage === totalPages;
+
+      } catch (err) {
+        Toast.show(err.message, 'error');
+        tbody.innerHTML = '';
+      }
+    }
+
+    document.getElementById('prevBtn').addEventListener('click', () => {
+        if (currentPage > 1) loadHistory(currentPage - 1);
+    });
+    
+    document.getElementById('nextBtn').addEventListener('click', () => {
+        if (currentPage < totalPages) loadHistory(currentPage + 1);
+    });
+
+    document.getElementById('exportBtn').addEventListener('click', async () => {
+        try {
+            const data = await apiClient.get(`/transactions?limit=10000`);
+            const txs = data.transactions;
+            
+            let csvContent = "data:text/csv;charset=utf-8,";
+            csvContent += "Date,Type,Material,Quantity,Source,Destination,Status,Notes\n";
+
+            txs.forEach(t => {
+                const mName = t.material ? t.material.name.replace(/,/g, '') : 'Unknown';
+                const row = [
+                   new Date(t.createdAt).toISOString(),
+                   t.type,
+                   mName,
+                   t.quantity,
+                   `"${t.source}"`,
+                   `"${t.destination}"`,
+                   t.status,
+                   `"${t.notes || ''}"`
+                ].join(",");
+                csvContent += row + "\rn";
+            });
+
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", `dmm_transactions_export_${new Date().toISOString().slice(0,10)}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            Toast.show('Export successful', 'success');
+        } catch(err) {
+            Toast.show('Failed to export data', 'error');
+        }
+    });
+
+    loadHistory(1);
+  </script>
+</body>
+</html>

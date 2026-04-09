@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login — Disaster Material Mgmt</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vanta@latest/dist/vanta.net.min.js"></script>
+</head>
+<body class="login-body">
+  <div id="vanta-bg" aria-hidden="true"></div>
+  <div class="login-ambient login-ambient-1"></div>
+  <div class="login-ambient login-ambient-2"></div>
+
+  <div class="login-topbar">
+    <div class="brand-chip">
+      <span class="brand-dot"></span>
+      <span>DMM Secure Access</span>
+    </div>
+    <button type="button" class="theme-toggle" id="themeToggleBtn" aria-label="Toggle theme">Theme</button>
+  </div>
+
+  <div class="auth-container">
+    <div class="auth-card glass-panel fade-in-up">
+      <div class="auth-header">
+        <div class="glow-icon" aria-hidden="true">🛡️</div>
+        <h2 id="authTitle">Welcome back</h2>
+        <p id="authDesc">Sign in to manage disaster relief materials securely.</p>
+      </div>
+
+      <form id="loginForm" autocomplete="on">
+        <div class="input-group">
+          <label for="username">Username</label>
+          <div class="input-wrapper">
+            <span class="input-icon" aria-hidden="true">👤</span>
+            <input type="text" id="username" name="username" placeholder="Your username" required>
+          </div>
+        </div>
+
+        <div class="input-group">
+          <label for="password">Password</label>
+          <div class="input-wrapper">
+            <span class="input-icon" aria-hidden="true">🔒</span>
+            <input type="password" id="password" name="password" placeholder="••••••••" required>
+          </div>
+        </div>
+
+        <div class="input-group hidden" id="roleGroup">
+          <label for="role">Role</label>
+          <div class="input-wrapper">
+            <span class="input-icon" aria-hidden="true">🛡️</span>
+            <select id="role" name="role">
+              <option value="manager">Manager</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="captcha-panel" id="captchaPanel">
+          <div class="captcha-header">
+            <span class="captcha-title">Verification</span>
+            <button type="button" class="captcha-refresh" id="captchaRefresh" title="New challenge" aria-label="Refresh captcha">
+              <span class="captcha-refresh-icon">↻</span> New
+            </button>
+          </div>
+          <div class="captcha-body">
+            <div class="captcha-question" id="captchaQuestion">
+              <span class="captcha-loading">Loading challenge…</span>
+            </div>
+            <div class="input-wrapper captcha-input-wrap">
+              <span class="input-icon" aria-hidden="true">✓</span>
+              <input type="text" inputmode="numeric" id="captchaAnswer" name="captcha" placeholder="Answer" autocomplete="off" required aria-describedby="captchaHint">
+            </div>
+            <p class="captcha-hint" id="captchaHint">Solve the math puzzle above to prove you are human.</p>
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-glow btn-login" id="submitBtn">
+          <span class="btn-shine" aria-hidden="true"></span>
+          <span class="btn-label" id="submitBtnLabel">Login securely</span>
+        </button>
+      </form>
+
+      <div class="auth-footer">
+        <p>Need an account? <a href="#" id="toggleRegister" class="text-primary-glow">Register here</a></p>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script>
+    let vantaEffect;
+    try {
+      vantaEffect = VANTA.NET({
+        el: '#vanta-bg',
+        mouseControls: true,
+        touchControls: true,
+        gyroControls: false,
+        minHeight: 200.0,
+        minWidth: 200.0,
+        scale: 1.0,
+        scaleMobile: 1.0,
+        color: 0x3b82f6,
+        backgroundColor: 0x0f172a,
+        points: 12.0,
+        maxDistance: 22.0,
+        spacing: 18.0
+      });
+    } catch (e) {
+      console.warn('Vanta init failed', e);
+    }
+
+    const loginForm = document.getElementById('loginForm');
+    const roleGroup = document.getElementById('roleGroup');
+    const themeToggleBtn = document.getElementById('themeToggleBtn');
+    const submitBtnLabel = document.getElementById('submitBtnLabel');
+    const submitBtn = document.getElementById('submitBtn');
+    const captchaQuestion = document.getElementById('captchaQuestion');
+    const captchaRefresh = document.getElementById('captchaRefresh');
+    let isRegistering = false;
+    let captchaId = null;
+
+    if (localStorage.getItem('token')) {
+      window.location.href = '/dashboard.html';
+    }
+
+    function updateVantaTheme(theme) {
+      if (!vantaEffect || !vantaEffect.setOptions) return;
+      if (theme === 'light') {
+        vantaEffect.setOptions({ backgroundColor: 0xf8fafc, color: 0x2563eb });
+      } else {
+        vantaEffect.setOptions({ backgroundColor: 0x0f172a, color: 0x3b82f6 });
+      }
+    }
+
+    const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+    updateVantaTheme(currentTheme);
+
+    themeToggleBtn.addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme') || 'dark';
+      const next = current === 'light' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      updateVantaTheme(next);
+    });
+
+    async function loadCaptcha() {
+      captchaQuestion.innerHTML = '<span class="captcha-loading pulse-text">Loading challenge…</span>';
+      captchaId = null;
+      document.getElementById('captchaAnswer').value = '';
+      try {
+        const res = await fetch('/api/auth/captcha');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || 'Captcha failed');
+        captchaId = data.captchaId;
+        captchaQuestion.innerHTML = `<span class="captcha-math">${data.question}</span> <span class="captcha-eq">= ?</span>`;
+      } catch (err) {
+        captchaQuestion.innerHTML = '<span class="captcha-error">Could not load captcha. Retry.</span>';
+        if (typeof Toast !== 'undefined') Toast.show(err.message || 'Captcha error', 'error');
+      }
+    }
+
+    captchaRefresh.addEventListener('click', () => {
+      captchaRefresh.classList.add('spin-once');
+      setTimeout(() => captchaRefresh.classList.remove('spin-once'), 500);
+      loadCaptcha();
+    });
+
+    document.getElementById('toggleRegister').addEventListener('click', (e) => {
+      e.preventDefault();
+      isRegistering = !isRegistering;
+
+      const authCard = document.querySelector('.auth-card');
+      authCard.classList.remove('fade-in-up');
+      void authCard.offsetWidth;
+      authCard.classList.add('fade-in-up');
+
+      document.getElementById('authTitle').innerText = isRegistering ? 'Create account' : 'Welcome back';
+      document.getElementById('authDesc').innerText = isRegistering
+        ? 'Join the crisis management team.'
+        : 'Sign in to manage disaster relief materials securely.';
+      submitBtnLabel.innerText = isRegistering ? 'Register now' : 'Login securely';
+      e.target.innerText = isRegistering ? 'Back to login' : 'Register here';
+
+      if (isRegistering) {
+        roleGroup.classList.remove('hidden');
+      } else {
+        roleGroup.classList.add('hidden');
+      }
+      loadCaptcha();
+    });
+
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      const role = document.getElementById('role').value;
+      const captchaAnswer = document.getElementById('captchaAnswer').value;
+      const originalLabel = submitBtnLabel.innerText;
+
+      if (!captchaId) {
+        if (typeof Toast !== 'undefined') Toast.show('Please wait for captcha or refresh.', 'error');
+        else alert('Captcha not ready');
+        return;
+      }
+
+      submitBtnLabel.innerText = 'Processing…';
+      submitBtn.disabled = true;
+      submitBtn.classList.add('btn-loading');
+
+      try {
+        const endpoint = isRegistering ? '/api/auth/register' : '/api/auth/login';
+        const payload = { username, password, captchaId, captchaAnswer };
+        if (isRegistering) payload.role = role;
+
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+
+        if (res.ok) {
+          localStorage.setItem('token', data.token);
+          localStorage.setItem('user', JSON.stringify(data));
+          if (typeof Toast !== 'undefined') Toast.show('Authentication successful!', 'success');
+          const card = document.querySelector('.auth-card');
+          card.classList.add('auth-success-out');
+          setTimeout(() => {
+            window.location.href = '/dashboard.html';
+          }, 550);
+        } else {
+          if (typeof Toast !== 'undefined') Toast.show(data.message || 'Authentication failed', 'error');
+          else alert(data.message || 'Authentication failed');
+          submitBtnLabel.innerText = originalLabel;
+          submitBtn.disabled = false;
+          submitBtn.classList.remove('btn-loading');
+          loadCaptcha();
+        }
+      } catch (err) {
+        if (typeof Toast !== 'undefined') Toast.show('Server error. Please check connection.', 'error');
+        else alert('Server error. Please check connection.');
+        submitBtnLabel.innerText = originalLabel;
+        submitBtn.disabled = false;
+        submitBtn.classList.remove('btn-loading');
+        loadCaptcha();
+      }
+    });
+
+    loadCaptcha();
+  </script>
+</body>
+</html>

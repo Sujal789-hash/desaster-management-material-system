@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Movement - Disaster Material Mgmt</title>
+  <link rel="stylesheet" href="css/style.css">
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body>
+  
+  <nav class="sidebar">
+    <div class="logo">DMM System</div>
+    <ul class="nav-links">
+      <li><a href="dashboard.html">Dashboard / Inventory</a></li>
+      <li><a href="receipt.html">Receive Material</a></li>
+      <li><a href="movement.html" class="active">Dispatch / Move</a></li>
+      <li><a href="delivery.html">Last Mile Delivery</a></li>
+      <li><a href="history.html">Transaction History</a></li>
+      <li class="admin-only"><a href="users.html">Manage Staff</a></li>
+      <li><a href="#" id="logoutBtn" style="color: var(--danger); margin-top: 2rem;">Logout</a></li>
+    </ul>
+  </nav>
+
+  <main class="main-content fade-in">
+    <header>
+      <h1 class="page-title-gradient">Material Movement & Tracking</h1>
+      <div class="header-actions">
+        <button class="theme-toggle" id="themeToggleBtn">Switch Theme</button>
+      </div>
+    </header>
+
+    <div class="live-strip is-waiting" id="liveStrip">
+      <span class="live-dot"></span>
+      <span id="liveStatusText">Connecting to live tracking…</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2rem;">
+      <div class="form-panel" style="margin-bottom: 0;">
+        <h3>Dispatch to Sub-Centers</h3>
+        <p style="color: var(--text-muted); margin-bottom: 2rem; font-size: 0.85rem;">Move items from your hub to local relief camps or distribution centers.</p>
+        
+        <form id="movementForm">
+          <div class="input-group">
+            <label>Material Type (Available Stock)</label>
+            <select id="mSelect" required></select>
+          </div>
+          <div class="input-group">
+            <label>Quantity to Dispatch</label>
+            <input type="number" id="mQty" min="1" required>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <div class="input-group">
+              <label>Source Hub</label>
+              <input type="text" id="mSource" value="Central Hub" required>
+            </div>
+            <div class="input-group">
+              <label>Destination Camp</label>
+              <input type="text" id="mDest" required placeholder="e.g. Relief Camp 4">
+            </div>
+          </div>
+          <div class="input-group">
+            <label>Auditor Notes</label>
+            <input type="text" id="mNotes" placeholder="Optional audit notes">
+          </div>
+          <button type="submit" class="btn btn-glow">Execute Movement & Track</button>
+        </form>
+      </div>
+      
+      <!-- Live Map Container -->
+      <div id="map" class="glass-panel map-panel-glow" style="border-radius: 20px; border: 1px solid var(--border); overflow: hidden; min-height: 400px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);"></div>
+    </div>
+
+    <!-- Latest Transactions Table -->
+    <div class="table-panel">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Type</th>
+            <th>Material</th>
+            <th>Qty Moved</th>
+            <th>Route</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="txTable"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/realtime.js"></script>
+  <script>
+    document.getElementById('logoutBtn').addEventListener('click', () => apiClient.logout());
+
+    document.getElementById('themeToggleBtn').addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'light' ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+    });
+
+    // Initialize Leaflet Map
+    const map = L.map('map').setView([28.6139, 77.2090], 10); // Default to Delhi coordinates
+    
+    // Add dark theme map tiles
+    const tileLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+    }).addTo(map);
+
+    // Custom Truck Icon
+    const truckIcon = L.icon({
+      iconUrl: 'https://cdn-icons-png.flaticon.com/512/3062/3062024.png',
+      iconSize: [32, 32],
+      iconAnchor: [16, 16],
+    });
+
+    // Mock coordinates dictionary for camps
+    const coordsMap = {
+      'central hub': [28.6139, 77.2090],
+      'relief camp 1': [28.5355, 77.3910], // Noida
+      'relief camp 2': [28.4595, 77.0266], // Gurgaon
+      'relief camp 3': [28.6692, 77.4538], // Ghaziabad
+      'relief camp 4': [28.4089, 77.3178], // Faridabad
+    };
+
+    // Helper to get fuzzy coordinates
+    function getCoords(name) {
+      const key = name.toLowerCase().trim();
+      if(coordsMap[key]) return coordsMap[key];
+      // Random offset from center if unknown
+      return [28.6139 + (Math.random() - 0.5) * 0.2, 77.2090 + (Math.random() - 0.5) * 0.2];
+    }
+
+    async function init() {
+      // Load materials for select dropdown
+      const dataM = await apiClient.get('/materials?limit=1000');
+      const materials = dataM.materials || dataM;
+      
+      const select = document.getElementById('mSelect');
+      select.innerHTML = materials.map(m => `<option value="${m._id}">${m.name} (Available: ${m.availableQuantity})</option>`).join('');
+
+      // Load transactions
+      const dataT = await apiClient.get('/transactions?limit=25');
+      const txs = dataT.transactions || dataT;
+      const tbody = document.getElementById('txTable');
+      tbody.innerHTML = txs.filter(t => t.type === 'MOVEMENT').map(t => `
+        <tr>
+          <td>${new Date(t.createdAt).toLocaleDateString()}</td>
+          <td><span class="badge ${t.type.toLowerCase()}">${t.type}</span></td>
+          <td>${t.material?.name || 'Unknown'}</td>
+          <td>${t.quantity}</td>
+          <td>${t.source} -> ${t.destination}</td>
+          <td>${t.status || 'IN_TRANSIT'}</td>
+        </tr>
+      `).join('');
+    }
+
+    let lastLocalMovementAt = 0;
+    let txReloadTimer;
+
+    function scheduleTxReload() {
+      clearTimeout(txReloadTimer);
+      txReloadTimer = setTimeout(() => init(), 500);
+    }
+
+    document.addEventListener('realtime:ready', () => {
+      const t = document.getElementById('liveStatusText');
+      const strip = document.getElementById('liveStrip');
+      if (t) t.textContent = 'Live tracking — map updates with hub activity';
+      if (strip) strip.classList.remove('is-waiting');
+    });
+
+    if (window.Realtime) {
+      Realtime.on('transaction:new', () => scheduleTxReload());
+      Realtime.on('tracking:movement', (p) => {
+        scheduleTxReload();
+        if (Date.now() - lastLocalMovementAt > 2800) {
+          animateMovement(p.source || 'Central Hub', p.destination || 'Relief camp');
+        }
+      });
+    }
+
+    // Map Animation Function
+    function animateMovement(source, dest) {
+      const startCoord = getCoords(source);
+      const endCoord = getCoords(dest);
+
+      // Draw Route Line
+      const routeLine = L.polyline([startCoord, endCoord], {
+        color: '#3b82f6',
+        weight: 4,
+        dashArray: '10, 10',
+        className: 'animated-route'
+      }).addTo(map);
+
+      map.fitBounds(routeLine.getBounds(), { padding: [50, 50] });
+
+      // Add markers for source/dest
+      L.marker(startCoord).addTo(map).bindPopup(source).openPopup();
+      L.marker(endCoord).addTo(map).bindPopup(dest);
+
+      // Animate truck along line
+      const truckMarker = L.marker(startCoord, {icon: truckIcon}).addTo(map);
+      
+      let step = 0;
+      const totalSteps = 100;
+      const stepDuration = 50; // ms
+
+      const interval = setInterval(() => {
+        step++;
+        const lat = startCoord[0] + (endCoord[0] - startCoord[0]) * (step / totalSteps);
+        const lng = startCoord[1] + (endCoord[1] - startCoord[1]) * (step / totalSteps);
+        
+        truckMarker.setLatLng([lat, lng]);
+
+        if (step >= totalSteps) {
+          clearInterval(interval);
+          truckMarker.bindPopup('Delivery Arrived!').openPopup();
+          if(typeof Toast !== 'undefined') Toast.show('Material reached destination!', 'success');
+        }
+      }, stepDuration);
+    }
+
+    document.getElementById('movementForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      try {
+        const source = document.getElementById('mSource').value;
+        const dest = document.getElementById('mDest').value;
+
+        lastLocalMovementAt = Date.now();
+
+        await apiClient.post('/transactions/movement', {
+          materialId: document.getElementById('mSelect').value,
+          quantity: parseInt(document.getElementById('mQty').value, 10),
+          source: source,
+          destination: dest,
+          notes: document.getElementById('mNotes').value,
+          status: 'IN_TRANSIT'
+        });
+        
+        e.target.reset();
+        init();
+        
+        if(typeof Toast !== 'undefined') Toast.show('Movement dispatched! Tracking started.', 'success');
+        
+        // Start live tracking animation
+        animateMovement(source, dest);
+      } catch (err) {
+        if(typeof Toast !== 'undefined') Toast.show(err.message, 'error');
+        else alert(err.message);
+      }
+    });
+
+    init();
+  </script>
+  
+  <style>
+    /* Polyline Animation for Route */
+    .animated-route {
+      animation: dash 50s linear infinite;
+    }
+    @keyframes dash {
+      to {
+        stroke-dashoffset: -1000;
+      }
+    }
+  </style>
+</body>
+</html>
